@@ -1,82 +1,28 @@
-# 代码分析解释
-
+# GraphCast 天气预报模型推理脚本分析
 *导出时间: 2025/11/28 16:04:07*
 
 ---
 
-### User
+## 需求背景
+用户提供了 `inference.py` 脚本文件，要求对该 GraphCast 天气预报模型的推理+可视化脚本进行详细的代码解析。
 
-📎 **inference.py** (Python)
-
-详细解释分析这段代码
+## 脚本核心功能
+该脚本是 GraphCast 天气预报模型的推理与可视化工具，核心能力包括：
+- 解析命令行传入的运行参数
+- 加载预训练模型权重或初始化随机模型
+- 读取气象数据集并完成数据预处理
+- 执行 GraphCast 模型的滚动推理（rollout）
+- 可视化真实值、预测值及两者差值并保存结果图片
 
 ---
 
-### ChatGPT
+## 代码模块详细解析
+### 1. 命令行参数与工具函数
+该模块包含参数解析、参数打印、文件名元数据解析三个基础工具函数，为脚本运行提供配置支撑。
 
-这段脚本整体上是一个 GraphCast 天气预报模型的推理+可视化脚本：
-
-
-从命令行读取参数
-
-
-加载预训练模型和数据
-
-
-用 GraphCast 做一次滚动推理（rollout）
-
-
-把真实值、预测值和它们的差画图并保存为图片
-
-
-下面我按“从上到下 + 整体流程”来详细讲一遍。inference
-
-1. 整体结构概览
-文件大致分为几块：
-
-
-参数和小工具函数：argsparser、print_arguments、parse_file_parts
-
-
-数据处理和画图相关函数：select、scale、plot_data、save_var_diff
-
-
-数据合法性检查和归一化数据加载：data_valid_for_model、load_data
-
-
-构建 GraphCast 模型：construct_wrapped_graphcast
-
-
-Haiku transform 的前向/损失/梯度函数：run_forward、loss_fn、grads_fn
-
-
-main() 主流程：
-
-
-解析命令行参数
-
-
-加载模型（随机 or Checkpoint）
-
-
-加载数据并拆分 inputs/targets/forcings
-
-
-JIT 包装模型、损失和梯度函数
-
-
-做推理 rollout
-
-
-可视化结果
-
-
-
-
-
-2. 命令行参数和工具函数
-2.1 argsparser()
-python复制代码def argsparser():
+#### 1.1 命令行参数解析 `argsparser()`
+```python
+def argsparser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--pretrained",
@@ -102,46 +48,25 @@ python复制代码def argsparser():
         default=500,
         help="atmospheric pressure level")
     return parser
+```
+**功能说明**：定义脚本运行的核心命令行参数，包括模型路径、数据集路径、参数加载模式、可视化变量、气压层等。
 
-命令行传参：
+#### 1.2 参数打印 `print_arguments(args)`
+**功能说明**：打印解析后的命令行参数，方便开发者确认运行配置，无核心代码逻辑，仅为调试辅助。
 
-
---pretrained: 预训练模型 checkpoint 文件路径
-
-
---dataset: 输入数据（NetCDF 文件）路径
-
-
---mode: 获取模型参数的方式，代码中只用到了 "Random" 或 "Checkpoint"
-
-
---var: 想要可视化的气象变量名，默认 "2m_temperature"
-
-
---level: 可视化的气压层，默认 500 hPa
-
-
-2.2 print_arguments(args)
-简单打印参数，方便确认运行时配置。
-2.3 parse_file_parts(file_name)
-python复制代码def parse_file_parts(file_name):
+#### 1.3 文件名元数据解析 `parse_file_parts(file_name)`
+```python
+def parse_file_parts(file_name):
     return dict(part.split("-", 1) for part in file_name.split("_"))
+```
+**功能说明**：从文件名中提取元数据（如数据源、分辨率、压力层数），格式示例：`source-era5_res-0.25_levels-13` 解析为 `{"source": "era5", "res": "0.25"}`，用于后续数据与模型配置的匹配检查。
 
-假设文件名形如：
-source-era5_res-0.25_levels-13_...
+### 2. 数据选择与可视化函数
+该模块实现气象数据的筛选、归一化及可视化绘图，是脚本的核心展示层逻辑。
 
-
-按 _ 切分 -> 每块像 source-era5
-
-
-再按 - 切分成 key/value -> {"source": "era5", "res": "0.25", "levels": "13", ...}
-
-
-后面用它来检查数据是否匹配模型配置。
-
-3. 数据选择与画图相关函数
-3.1 select(...)：从 xarray Dataset 里选变量/层/时间步
-python复制代码def select(
+#### 2.1 数据筛选 `select(...)`
+```python
+def select(
     data: xarray.Dataset,
     variable: str,
     level: Optional[int] = None,
@@ -155,24 +80,12 @@ python复制代码def select(
     if level is not None and "level" in data.coords:
         data = data.sel(level=level)
     return data
+```
+**功能说明**：从 xarray 数据集中筛选指定的气象变量、气压层和时间步，同时去除 batch 维度（仅保留第一个样本）。
 
-做了几件事：
-
-
-选出指定变量 variable
-
-
-如果有 batch 维度，只取 batch=0（只看第一样本）
-
-
-如果指定 max_steps，并且时间步数大于 max_steps，则只取前 max_steps 个时间步
-
-
-如果指定 level 且有 level 坐标，则选定指定气压层
-
-
-3.2 scale(...)：计算画图时的归一化范围与 colormap
-python复制代码def scale(
+#### 2.2 可视化归一化 `scale(...)`
+```python
+def scale(
     data: xarray.Dataset,
     center: Optional[float] = None,
     robust: bool = False,
@@ -185,87 +98,26 @@ python复制代码def scale(
         vmax = center + diff
     return (data, matplotlib.colors.Normalize(vmin, vmax),
           ("RdBu_r" if center is not None else "viridis"))
+```
+**功能说明**：计算可视化的颜色映射范围，支持鲁棒归一化（2-98 百分位）和对称中心归一化（适用于差值图），并选择对应的 colormap（差值图用 `RdBu_r`，普通图用 `viridis`）。
 
-
-
-robust=True 时用 2–98 百分位，避免极端值影响色条范围
-
-
-如果指定了 center（例如差值图中心为 0），会让 vmin/vmax 对称地围绕 center
-
-
-返回：
-
-
-原数据
-
-
-Normalize 对象（控制颜色映射范围）
-
-
-使用的 colormap：
-
-
-有 center 用 RdBu_r（红蓝反转，适合偏差）
-
-
-否则用 viridis
-
-
-
-
-
-
-3.3 plot_data(...)：画多个子图（目标/预测/差值）
-python复制代码def plot_data(
+#### 2.3 绘图函数 `plot_data(...)`
+```python
+def plot_data(
     data: dict[str, xarray.Dataset],
     fig_title: str,
     plot_size: float = 5,
     robust: bool = False,
     cols: int = 4,
     ) -> tuple[xarray.Dataset, matplotlib.colors.Normalize, str]:
+    # 核心逻辑：创建子图、绘制数据、添加色条、保存图片
+    pass
+```
+**功能说明**：根据输入的真实值、预测值、差值数据创建子图，隐藏坐标轴并添加颜色条，最终保存可视化图片（循环保存会覆盖，不影响核心展示）。
 
-这里 data 结构类似：
-python复制代码{
-  "Targets": (data_xarray, norm, cmap),
-  "Predictions": (...),
-  "Diff": (...)
-}
-
-主要步骤：
-
-
-从第一个数据中取出时间维大小，用来确认所有数据时间步数一致
-
-
-根据 len(data) 和 cols 计算行列数，创建 figure
-
-
-对每个 (title, (plot_data, norm, cmap))：
-
-
-创建子图
-
-
-隐藏坐标轴
-
-
-图名用 title（如 "Targets", "Predictions", "Diff"）
-
-
-用 imshow 把第 0 个时间步画出来
-
-
-加 colorbar
-
-
-
-
-每次循环里调用 plt.savefig(f"{fig_title}.png")（这里有点小问题：在循环里保存会重复覆盖同一个文件，多余，但不影响核心逻辑）
-
-
-3.4 save_var_diff(...)：专门画目标 vs 预测 vs 差值
-python复制代码def save_var_diff(eval_targets, predictions, plot_pred_variable, plot_pred_level, plot_max_steps=1):
+#### 2.4 差值可视化封装 `save_var_diff(...)`
+```python
+def save_var_diff(eval_targets, predictions, plot_pred_variable, plot_pred_level, plot_max_steps=1):
     plot_size = 5
     plot_max_steps = min(predictions.sizes["time"], 1)
 
@@ -281,44 +133,18 @@ python复制代码def save_var_diff(eval_targets, predictions, plot_pred_variabl
       fig_title += f"_at_{plot_pred_level}_hPa"
 
     plot_data(data, fig_title, plot_size, True)
+```
+**功能说明**：封装真实值、预测值、差值的可视化流程，自动生成图片名称（如 `2m_temperature_at_500_hPa.png`）并调用 `plot_data` 绘图。
 
+### 3. 数据归一化与模型配置
+该模块实现模型所需的统计数据加载及数据合法性检查。
 
+#### 3.1 数据合法性检查 `data_valid_for_model(...)`
+**功能说明**：检查文件名提取的元数据（分辨率、压力层数）与模型配置是否一致，目前未在主流程中调用，为预留的健壮性检查逻辑。
 
-使用上面的 select 和 scale：
-
-
-Targets: 真实值
-
-
-Predictions: 预测值
-
-
-Diff: 真实值 - 预测值，center=0 用红蓝色差分色条
-
-
-
-
-图片文件名类似 2m_temperature_at_500_hPa.png
-
-
-
-4. 归一化和模型配置相关
-4.1 data_valid_for_model(...)（目前没在 main 中用）
-检查数据文件名提取出的信息是否与模型配置一致，比如：
-
-
-分辨率 res
-
-
-压力层数 levels
-
-
-源数据 source 与是否使用 total_precipitation_6hr 对应
-
-
-如果严格部署，这个函数可以在加载数据前做 sanity check。
-4.2 load_data()：加载标准化统计量
-python复制代码def load_data():
+#### 3.2 归一化统计数据加载 `load_data()`
+```python
+def load_data():
     # Load normalization data
     with open("./stats/stats_diffs_stddev_by_level.nc", "rb") as f:
         diffs_stddev_by_level = xarray.load_dataset(f).compute()
@@ -327,24 +153,14 @@ python复制代码def load_data():
     with open("./stats/stats_stddev_by_level.nc", "rb") as f:
         stddev_by_level = xarray.load_dataset(f).compute()
     return diffs_stddev_by_level, mean_by_level, stddev_by_level 
+```
+**功能说明**：从 `./stats/` 目录加载气象数据的归一化统计量（均值、标准差、差分标准差），为模型输入输出的归一化提供依据。
 
-从 ./stats/ 目录读三个 NetCDF 文件，包含：
+### 4. GraphCast 模型构建
+该模块是脚本的核心模型层，实现 GraphCast 模型的封装与配置。
 
-
-每层的差分标准差
-
-
-每层的均值
-
-
-每层的标准差
-
-
-用于输入输出的归一化和残差归一化。
-
-5. 构建封装好的 GraphCast 模型
-5.1 construct_wrapped_graphcast(...)
-python复制代码def construct_wrapped_graphcast(
+```python
+def construct_wrapped_graphcast(
     model_config: graphcast.ModelConfig,
     task_config: graphcast.TaskConfig):
 
@@ -366,75 +182,28 @@ python复制代码def construct_wrapped_graphcast(
     # Wraps everything so the one-step model can produce trajectories.
     predictor = autoregressive.Predictor(predictor, gradient_checkpointing=True)
     return predictor
+```
+**功能说明**：按层级封装 GraphCast 模型：
+1. 创建基础的单步预测器 `graphcast.GraphCast`
+2. 转换为 BFloat16 精度以节省显存
+3. 添加输入/残差归一化层
+4. 封装为自回归预测器，支持多步滚动推理（rollout）
 
-封装顺序：
+### 5. Haiku 模型转换与梯度计算
+该模块基于 Haiku 框架实现模型的前向推理、损失计算与梯度求解。
 
-
-GraphCast 原始一时刻预测器（single-step）
-
-
-用 Bfloat16Cast 把内部计算转成 bfloat16（更省显存）
-
-
-外面再包一层 InputsAndResiduals，负责：
-
-
-对输入/输出做标准化（用之前 load_data() 得到的统计量）
-
-
-预测残差等
-
-
-
-
-最外层包成 autoregressive.Predictor：
-
-
-可以根据单步模型反复滚动，得到多步预测序列
-
-
-打开 gradient_checkpointing 减少显存（如果训练时用）
-
-
-
-
-
-6. Haiku 模型 transform 与损失/梯度函数
-6.1 run_forward：前向推理函数
-python复制代码@hk.transform_with_state
+#### 5.1 前向推理 `run_forward`
+```python
+@hk.transform_with_state
 def run_forward(model_config, task_config, inputs, targets_template, forcings):
     predictor = construct_wrapped_graphcast(model_config, task_config)
     return predictor(inputs, targets_template=targets_template, forcings=forcings)
+```
+**功能说明**：通过 `hk.transform_with_state` 将模型转换为 Haiku 格式，支持参数初始化与前向计算分离。
 
-
-
-@hk.transform_with_state 会把这个函数转成 Haiku 的形式：
-
-
-init(...) 负责初始化参数
-
-
-apply(params, state, rng, ...) 负责前向计算
-
-
-
-
-输入：
-
-
-inputs: 历史输入变量（xarray -> jax array）
-
-
-targets_template: 只用来提供目标的 shape（这里传入的是 eval_targets * np.nan）
-
-
-forcings: 外部强迫（如太阳辐射等）
-
-
-
-
-6.2 loss_fn：带诊断的损失函数
-python复制代码@hk.transform_with_state
+#### 5.2 损失函数 `loss_fn`
+```python
+@hk.transform_with_state
 def loss_fn(model_config, task_config, inputs, targets, forcings):
 
     predictor = construct_wrapped_graphcast(model_config, task_config)
@@ -442,25 +211,12 @@ def loss_fn(model_config, task_config, inputs, targets, forcings):
     return xarray_tree.map_structure(
         lambda x: xarray_jax.unwrap_data(x.mean(), require_jax=True),
         (loss, diagnostics))
+```
+**功能说明**：计算模型损失与诊断指标，并对结果求均值后转换为纯 JAX 数组。
 
-
-
-调用 predictor.loss(...) 计算：
-
-
-标量损失（带 time/space/variable 维度）
-
-
-其他诊断指标
-
-
-
-
-再用 xarray_tree.map_structure 把每个 xarray 里的数据取 mean（全局平均），并 unwrap 成纯 JAX 数组。
-
-
-6.3 grads_fn：计算损失及其梯度
-python复制代码def grads_fn(params, state, model_config, task_config, inputs, targets, forcings):
+#### 5.3 梯度计算 `grads_fn`
+```python
+def grads_fn(params, state, model_config, task_config, inputs, targets, forcings):
 
     def _aux(params, state, i, t, f):
         (loss, diagnostics), next_state = loss_fn.apply(
@@ -470,261 +226,64 @@ python复制代码def grads_fn(params, state, model_config, task_config, inputs,
     (loss, (diagnostics, next_state)), grads = jax.value_and_grad(
         _aux, has_aux=True)(params, state, inputs, targets, forcings)
     return loss, diagnostics, next_state, grads
-
-
-
-_aux 封装了调用 loss_fn.apply 的逻辑，返回 (loss, (diagnostics, next_state))
-
-
-用 jax.value_and_grad 对 params 求梯度
-
-
-返回 loss、diagnostics、next_state 和 grads
-（在 main 里这块训练代码被注释掉了）
-
-
-
-7. main() 主流程
-7.1 解析参数并打印
-python复制代码parser = argsparser()
-FLAGS = parser.parse_args()
-print_arguments(FLAGS)
-
-7.2 加载或构建模型
-python复制代码source = FLAGS.mode
-if source == "Random":
-    params = None  # Filled in below
-    state = {}
-    model_config = graphcast.ModelConfig(...)
-    task_config = graphcast.TaskConfig(...)
-else:
-    assert source == "Checkpoint"
-    with open(FLAGS.pretrained, "rb") as f:
-        ckpt = checkpoint.load(f, graphcast.CheckPoint)
-    params = ckpt.params
-    state = {}
-    model_config = ckpt.model_config
-    task_config = ckpt.task_config
-
-两种模式：
-
-
-Random:
-
-
-不加载 checkpoint，params=None，随后会用 run_forward.init 随机初始化
-
-
-使用一个较小的模型配置（latent_size=32 等）
-
-
-
-
-Checkpoint：
-
-
-从 FLAGS.pretrained 指定的文件加载 CheckPoint
-
-
-里面包含 params、model_config、task_config、描述和 license
-
-
-打印模型信息
-
-
-
-
-7.3 加载数据并拆分 inputs/targets/forcings
-python复制代码dataset_file = FLAGS.dataset
-with open(dataset_file, "rb") as f:
-    example_batch = xarray.load_dataset(f).compute()
-assert example_batch.sizes["time"] >= 3
-print(", ".join([...parse_file_parts...]))
-
-train_inputs, train_targets, train_forcings = data_utils.extract_inputs_targets_forcings(
-    example_batch, target_lead_times=slice("6h", f"{1 * 6}h"),
-    **dataclasses.asdict(task_config))
-
-eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
-    example_batch, target_lead_times=slice("6h", f"{1 * 6}h"),
-    **dataclasses.asdict(task_config))
-
-
-
-xarray.load_dataset 读取 NetCDF 数据集
-
-
-需要至少 3 个 time step（2 个输入 + >=1 个目标）
-
-
-extract_inputs_targets_forcings 会：
-
-
-根据 task_config 中的变量列表、时间长度等，从 example_batch 中拆分出：
-
-
-inputs（比如过去 24 小时）
-
-
-targets（未来 6 小时）
-
-
-forcings（外部强迫）
-
-
-
-
-
-
-这里 train 和 eval 用的是同一批数据，只是分别命名。
-7.4 辅助包装函数：with_configs / with_params / drop_state
-python复制代码def with_configs(fn):
-    return functools.partial(
-        fn, model_config=model_config, task_config=task_config)
-
-def with_params(fn):
-    return functools.partial(fn, params=params, state=state)
-
-def drop_state(fn):
-    return lambda **kw: fn(**kw)[0]
-
-用途：
-
-
-JAX 的 jit 一般不喜欢对复杂对象（如 config dataclass）做闭包捕获，因此用 partial 方式作为显式参数。
-
-
-drop_state：有些函数返回 (output, state)，但这里模型其实无状态，所以只取 [0]。
-
-
-7.5 初始化参数（如果是 Random 模式）
-python复制代码init_jitted = jax.jit(with_configs(run_forward.init))
-
-if params is None:
-    params, state = init_jitted(
-        rng=jax.random.PRNGKey(0),
-        inputs=train_inputs,
-        targets_template=train_targets,
-        forcings=train_forcings)
-
-
-
-用 run_forward.init 根据输入数据 shape 初始化 Haiku 参数
-
-
-初始化时也要传入 model_config, task_config 作为静态参数
-
-
-7.6 JIT 化损失、梯度、前向推理函数
-python复制代码loss_fn_jitted = drop_state(with_params(jax.jit(with_configs(loss_fn.apply))))
-grads_fn_jitted = with_params(jax.jit(with_configs(grads_fn)))
-run_forward_jitted = drop_state(with_params(with_configs(
-    run_forward.apply)))
-
-
-
-loss_fn_jitted(rng=..., inputs=..., targets=..., forcings=...) 返回损失和诊断
-
-
-grads_fn_jitted(inputs=..., targets=..., forcings=...) 计算梯度
-
-
-run_forward_jitted(rng=..., inputs=..., targets_template=..., forcings=...) 做前向预测
-
-
-7.7 分辨率检查
-python复制代码assert model_config.resolution in (0, 360. / eval_inputs.sizes["lon"]), (
-    "Model resolution doesn't match the data resolution. ..."
-)
-
-确保模型和数据的经纬度分辨率一致，否则说明数据和模型不匹配。
-7.8 rollout 推理
-python复制代码predictions = rollout.chunked_prediction(
-    run_forward_jitted,
-    rng=jax.random.PRNGKey(0),
-    inputs=eval_inputs,
-    targets_template=eval_targets * np.nan,
-    forcings=eval_forcings)
-
-
-
-rollout.chunked_prediction 会多步滚动预测：
-
-
-初始用 inputs 预测 targets_template 形状的数据
-
-
-然后把预测结果作为新的输入再往前推（如果需要多时间步）
-
-
-
-
-这里 targets_template = eval_targets * np.nan 的目的是：
-
-
-用真实目标的 shape 填充 NaN，用于告诉模型期望输出的大小
-
-
-
-
-7.9 预测结果可视化
-python复制代码save_var_diff(eval_targets, predictions, FLAGS.var, FLAGS.level)
-print("----------------------------graphcast inference results----------------------------")
-print(predictions)
-
-
-
-画图（真实 vs 预测 vs 差值），图片保存到当前目录
-
-
-控制变量名 FLAGS.var 和层次 FLAGS.level
-
-
-打印整个 predictions 的 xarray 结构
-
-
-7.10 训练相关代码（已注释）
-下面一大段关于：
-
-
-计算训练损失
-
-
-反向传播求梯度
-
-
-再用 run_forward_jitted 预测
-
-
-都被注释掉了，保留作参考。
-
-8. 如何使用这段脚本（示例）
-假设你已经有：
-
-
-预训练模型 checkpoint：./graphcast.ckpt
-
-
-数据：./data/sample.nc
-
-
-命令可能像这样：
-bash复制代码python inference.py \
+```
+**功能说明**：通过 `jax.value_and_grad` 计算损失的梯度，为模型训练预留接口（主流程中训练代码被注释）。
+
+### 6. 主流程 `main()`
+该模块是脚本的入口，串联所有功能模块实现端到端的推理与可视化。
+
+```python
+def main():
+    # 1. 解析命令行参数
+    parser = argsparser()
+    FLAGS = parser.parse_args()
+    print_arguments(FLAGS)
+
+    # 2. 加载/初始化模型
+    source = FLAGS.mode
+    if source == "Random":
+        params = None
+        state = {}
+        model_config = graphcast.ModelConfig(...)
+        task_config = graphcast.TaskConfig(...)
+    else:
+        assert source == "Checkpoint"
+        with open(FLAGS.pretrained, "rb") as f:
+            ckpt = checkpoint.load(f, graphcast.CheckPoint)
+        params = ckpt.params
+        state = {}
+        model_config = ckpt.model_config
+        task_config = ckpt.task_config
+
+    # 3. 加载数据并拆分 inputs/targets/forcings
+    # ... 数据加载逻辑 ...
+
+    # 4. JIT 加速模型函数
+    # ... JIT 封装逻辑 ...
+
+    # 5. 执行滚动推理
+    # ... rollout 推理逻辑 ...
+
+    # 6. 可视化结果并保存
+    save_var_diff(eval_targets, predictions, FLAGS.var, FLAGS.level)
+```
+**核心步骤**：
+1. 解析并打印命令行参数
+2. 根据 `mode` 加载预训练模型或初始化随机模型
+3. 读取气象数据集并拆分为输入、目标、强迫数据
+4. 通过 JIT 加速模型推理函数
+5. 执行 GraphCast 模型的滚动推理
+6. 调用 `save_var_diff` 可视化并保存结果图片
+
+---
+
+## 脚本运行示例
+```bash
+python inference.py \
   --mode Checkpoint \
-  --pretrained ./graphcast.ckpt \
-  --dataset ./data/sample.nc \
+  --pretrained ./graphcast_ckpt \
+  --dataset ./era5_sample.nc \
   --var 2m_temperature \
   --level 500
-
-运行后，你会得到类似：
-
-
-2m_temperature_at_500_hPa.png：真实/预测/差值图
-
-
-控制台打印模型信息、输入/目标维度结构，以及 predictions 的 xarray 数据
-
-
-
-如果你愿意，我可以帮你逐行加中文注释版本，或者帮你改造成只做多步预测（比如连滚 4 个 6h 预测，总共 24h）并保存所有时间步的可视化。
-
+```
+**运行结果**：生成指定气象变量的真实值、预测值、差值可视化图片，控制台打印运行参数与推理信息。

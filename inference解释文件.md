@@ -59,7 +59,8 @@ def parse_file_parts(file_name):
 ```python
 def select(data: xarray.Dataset, variable: str, level: Optional[int] = None, max_steps: Optional[int] = None) -> xarray.Dataset:
     data = data[variable]
-    if "batch" in data.dims: data = data.isel(batch=0)
+    if "batch" in data.dims:
+        data = data.isel(batch=0)
     if max_steps is not None and "time" in data.sizes and max_steps < data.sizes["time"]:
         data = data.isel(time=range(0, max_steps))
     if level is not None and "level" in data.coords:
